@@ -1,30 +1,115 @@
-name: Node.js CI/CD
+name: Deploy Next.js App
 
-on: [push] # tells github to run this on any push to the repository
+on:
+  push:
+    branches: [main]
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    #needs: test # this job depends on "test" having finished
-    #if: github.ref == 'refs/heads/master' # we tell Github to only execute this step if we're on our master branch (so we don't put unfinished branches in production)
-    strategy:
-      fail-fast: false # tells github to not run further steps if this one fails
-      matrix:
-        node-version: [12.x] # sets the version of node we want to use, should be what you have on your server
 
     steps:
-      - name: Deploying to Digitalocean droplet
-        uses: appleboy/ssh-action@master # An action made to control Linux servers
-        with: # We set all our secrets here for the action, these won't be shown in the action logs
-          host: ${( secrets.HOST )}
-          username: ${( secrets.USERNAME )}
-          password: ${( secrets.PASSWORD )}
-          #port: ${( secrets.PORT )}
-          script: |
-            cd /var/www/html/trontex # we move into our app's folder
-            git pull # we pull any changes from git
-            export NVM_DIR=./.nvm #get the nvm environment to run npm commands
-            source -/.nvm/nvm.sh
-            npm install # we install any missing dependencies
-            npm run build # we build our app
-            pm2 reload office-site # we reload the app via PM2
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Next.js App
+        run: |
+          npm run build
+          echo "Build complete. Directory structure:"
+          ls -la
+          echo ".next contents:"
+          ls -la .next || echo "\u274C .next directory missing!"
+
+      - name: Create tarball of build artifacts
+        run: |
+          tar -czf next-build.tar.gz .next public package*.json
+          echo "Tarball created:"
+          ls -lh *.tar.gz
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-build
+          path: next-build.tar.gz
+          retention-days: 5
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: next-build
+          path: .
+
+      - name: Extract and verify build files
+        run: |
+          echo "Downloaded files:"
+          ls -la
+          
+          if [ ! -f "next-build.tar.gz" ]; then
+            echo "\u274C Tarball missing!"
+            exit 1
+          fi
+          
+          echo "Extracting files..."
+          tar -xzf next-build.tar.gz
+          
+          echo "Extracted files:"
+          ls -la
+          ls -la .next || echo "\u274C .next still missing after extraction!"
+          
+          if [ ! -d ".next" ]; then
+            echo "\u274C Critical error: .next directory missing after extraction!"
+            echo "Debugging info:"
+            file next-build.tar.gz
+            tar -tzf next-build.tar.gz || echo "Failed to list tarball contents"
+            exit 1
+          fi
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Deploy to Server
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          USER: ${{ secrets.SERVER_USER }}
+          APP_DIR: ${{ secrets.APP_DIR || '/var/www/nextjs' }}
+          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME || 'next-app' }}
+        run: |
+          echo "$SSH_PRIVATE_KEY" > deploy_key
+          chmod 600 deploy_key
+          mkdir -p ~/.ssh
+          ssh-keyscan -H $SERVER_IP >> ~/.ssh/known_hosts
+
+          rsync -avz --no-perms --no-owner --no-group --delete \
+            -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
+            .next/ \
+            public/ \
+            package*.json \
+            $USER@$SERVER_IP:$APP_DIR/
+
+          ssh -i deploy_key -o StrictHostKeyChecking=no $USER@$SERVER_IP <<EOF
+            set -e
+            cd $APP_DIR
+            npm ci --production
+            pm2 delete $PM2_APP_NAME || true
+            pm2 start npm --name "$PM2_APP_NAME" -- start
+            pm2 save
+            pm2 list
+          EOF
+
+          rm -f deploy_key

@@ -27,7 +27,7 @@ jobs:
           echo "Build complete. Directory structure:"
           ls -la
           echo ".next contents:"
-          ls -la .next || echo "❌ .next directory missing!"
+          ls -la .next || echo "\u274C .next directory missing!"
 
       - name: Create tarball of build artifacts
         run: |
@@ -60,7 +60,7 @@ jobs:
           ls -la
           
           if [ ! -f "next-build.tar.gz" ]; then
-            echo "❌ Tarball missing!"
+            echo "\u274C Tarball missing!"
             exit 1
           fi
           
@@ -69,17 +69,16 @@ jobs:
           
           echo "Extracted files:"
           ls -la
-          ls -la .next || echo "❌ .next still missing after extraction!"
+          ls -la .next || echo "\u274C .next still missing after extraction!"
           
           if [ ! -d ".next" ]; then
-            echo "❌ Critical error: .next directory missing after extraction!"
+            echo "\u274C Critical error: .next directory missing after extraction!"
             echo "Debugging info:"
             file next-build.tar.gz
             tar -tzf next-build.tar.gz || echo "Failed to list tarball contents"
             exit 1
           fi
 
-      # Rest of your deploy steps...
       - name: Install rsync
         run: sudo apt-get update && sudo apt-get install -y rsync
 
@@ -91,13 +90,11 @@ jobs:
           APP_DIR: ${{ secrets.APP_DIR || '/var/www/nextjs' }}
           PM2_APP_NAME: ${{ secrets.PM2_APP_NAME || 'next-app' }}
         run: |
-          # Setup SSH
           echo "$SSH_PRIVATE_KEY" > deploy_key
           chmod 600 deploy_key
           mkdir -p ~/.ssh
           ssh-keyscan -H $SERVER_IP >> ~/.ssh/known_hosts
 
-          # Sync files
           rsync -avz --no-perms --no-owner --no-group --delete \
             -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
             .next/ \
@@ -105,7 +102,6 @@ jobs:
             package*.json \
             $USER@$SERVER_IP:$APP_DIR/
 
-          # Remote commands
           ssh -i deploy_key -o StrictHostKeyChecking=no $USER@$SERVER_IP <<EOF
             set -e
             cd $APP_DIR
@@ -116,5 +112,4 @@ jobs:
             pm2 list
           EOF
 
-          # Cleanup
           rm -f deploy_key

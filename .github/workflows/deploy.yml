@@ -19,11 +19,15 @@ jobs:
       - name: Build Next.js App
         run: npm run build
 
+      - name: Verify .next Directory Before Upload
+        run: ls -la .next || echo ".next directory not found!"
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: next-build
           path: .next
+          retention-days: 5  # Keep artifact for 5 days to avoid expiration issues
 
   deploy:
     runs-on: ubuntu-latest
@@ -36,15 +40,23 @@ jobs:
           name: next-build
           path: .next
 
+      - name: Verify .next Directory After Download
+        run: ls -la .next || echo ".next directory not found after download!"
+
       - name: Deploy to Server
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SERVER_IP: ${{ secrets.SERVER_IP }}
           USER: ${{ secrets.SERVER_USER }}
         run: |
+          # Save private key
           echo "$SSH_PRIVATE_KEY" > deploy_key.pem
           chmod 600 deploy_key.pem
+
+          # Sync build files
           rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" .next/ $USER@$SERVER_IP:/var/www/nextjs
+
+          # SSH into the server and restart the app
           ssh -i deploy_key.pem -o StrictHostKeyChecking=no $USER@$SERVER_IP << 'EOF'
             cd /var/www/nextjs
             npm install --production

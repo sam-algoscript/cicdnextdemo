@@ -2,8 +2,7 @@ name: Deploy Next.js App
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
 
 jobs:
   build:
@@ -23,28 +22,24 @@ jobs:
         run: npm ci
 
       - name: Build Next.js App
-        run: npm run build
-
-      - name: Verify Build Output
         run: |
-          echo "Current directory structure:"
+          npm run build
+          echo "Build complete. Directory structure:"
           ls -la
-          echo ".next directory contents:"
+          echo ".next contents:"
           ls -la .next || echo "❌ .next directory missing!"
-          du -sh .next || exit 1
 
-      - name: Create deployment package
+      - name: Create tarball of build artifacts
         run: |
-          mkdir -p deployment-package
-          cp -r .next public package*.json deployment-package/
-          echo "Package contents:"
-          ls -la deployment-package
+          tar -czf next-build.tar.gz .next public package*.json
+          echo "Tarball created:"
+          ls -lh *.tar.gz
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: next-build
-          path: deployment-package/*
+          path: next-build.tar.gz
           retention-days: 5
 
   deploy:
@@ -57,19 +52,34 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: next-build
-          path: deployment-package
+          path: .
 
-      - name: Verify Downloaded Files
+      - name: Extract and verify build files
         run: |
-          echo "Downloaded artifacts:"
-          ls -la deployment-package
-          if [ ! -d "deployment-package/.next" ]; then
-            echo "❌ Critical error: .next directory missing!"
+          echo "Downloaded files:"
+          ls -la
+          
+          if [ ! -f "next-build.tar.gz" ]; then
+            echo "❌ Tarball missing!"
             exit 1
           fi
-          # Move files to workspace root
-          mv deployment-package/* ./
+          
+          echo "Extracting files..."
+          tar -xzf next-build.tar.gz
+          
+          echo "Extracted files:"
+          ls -la
+          ls -la .next || echo "❌ .next still missing after extraction!"
+          
+          if [ ! -d ".next" ]; then
+            echo "❌ Critical error: .next directory missing after extraction!"
+            echo "Debugging info:"
+            file next-build.tar.gz
+            tar -tzf next-build.tar.gz || echo "Failed to list tarball contents"
+            exit 1
+          fi
 
+      # Rest of your deploy steps...
       - name: Install rsync
         run: sudo apt-get update && sudo apt-get install -y rsync
 
@@ -87,26 +97,19 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H $SERVER_IP >> ~/.ssh/known_hosts
 
-          # Sync files with better error handling
-          echo "Starting file sync..."
+          # Sync files
           rsync -avz --no-perms --no-owner --no-group --delete \
             -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
-            --exclude='.git' \
-            --exclude='.github' \
-            --include='.next' \
-            --include='public' \
-            --include='package*.json' \
-            --exclude='*' \
-            ./ $USER@$SERVER_IP:$APP_DIR/
+            .next/ \
+            public/ \
+            package*.json \
+            $USER@$SERVER_IP:$APP_DIR/
 
-          # Remote deployment commands
-          echo "Running remote deployment..."
+          # Remote commands
           ssh -i deploy_key -o StrictHostKeyChecking=no $USER@$SERVER_IP <<EOF
             set -e
             cd $APP_DIR
-            echo "Installing production dependencies..."
             npm ci --production
-            echo "Restarting application..."
             pm2 delete $PM2_APP_NAME || true
             pm2 start npm --name "$PM2_APP_NAME" -- start
             pm2 save
@@ -115,4 +118,3 @@ jobs:
 
           # Cleanup
           rm -f deploy_key
-          echo "✅ Deployment completed successfully"

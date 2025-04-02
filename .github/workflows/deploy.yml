@@ -13,52 +13,95 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'  # Specify your Node.js version
+          cache: 'npm'
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci  # Clean install for consistency
 
       - name: Build Next.js App
         run: npm run build
 
-      - name: Verify .next Directory Before Upload
-        run: ls -la .next || echo ".next directory not found!"
+      - name: Verify .next Directory
+        run: |
+          if [ ! -d ".next" ]; then
+            echo "❌ .next directory not found!"
+            exit 1
+          fi
+          echo "✅ .next directory exists"
+          du -sh .next
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: next-build
-          path: .next
-          retention-days: 5  # Keep artifact for 5 days to avoid expiration issues
+          path: |
+            .next
+            public  # Include public directory if needed
+            package.json
+            package-lock.json
+            node_modules  # Or just required production modules
+          retention-days: 5
 
   deploy:
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 15  # Prevent hanging deployments
 
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: next-build
-          path: .next
+          path: .
 
-      - name: Verify .next Directory After Download
-        run: ls -la .next || echo ".next directory not found after download!"
+      - name: Verify Downloaded Files
+        run: |
+          ls -la
+          if [ ! -d ".next" ]; then
+            echo "❌ .next directory missing after download!"
+            exit 1
+          fi
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
 
       - name: Deploy to Server
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SERVER_IP: ${{ secrets.SERVER_IP }}
           USER: ${{ secrets.SERVER_USER }}
+          APP_DIR: ${{ secrets.APP_DIR || '/var/www/nextjs' }}
+          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME || 'next-app' }}
         run: |
-          # Save private key
-          echo "$SSH_PRIVATE_KEY" > deploy_key.pem
-          chmod 600 deploy_key.pem
+          # Setup SSH
+          echo "$SSH_PRIVATE_KEY" > deploy_key
+          chmod 600 deploy_key
+          mkdir -p ~/.ssh
+          echo "$SERVER_IP ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBB..." >> ~/.ssh/known_hosts
 
-          # Sync build files
-          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" .next/ $USER@$SERVER_IP:/var/www/nextjs
+          # Sync files (excluding node_modules if not needed)
+          rsync -avz --delete -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
+            --exclude='.git' \
+            --exclude='.github' \
+            .next/ \
+            public/ \
+            package.json \
+            package-lock.json \
+            $USER@$SERVER_IP:$APP_DIR/
 
-          # SSH into the server and restart the app
-          ssh -i deploy_key.pem -o StrictHostKeyChecking=no $USER@$SERVER_IP << 'EOF'
-            cd /var/www/nextjs
-            npm install --production
-            pm2 restart next-app || pm2 start npm --name "next-app" -- start
-          EOF
+          # Remote commands
+          ssh -i deploy_key -o StrictHostKeyChecking=no $USER@$SERVERIP << 'ENDSSH'
+            cd $APP_DIR
+            npm ci --production
+            npx next build || echo "Build already exists"
+            pm2 restart $PM2_APP_NAME || pm2 start npm --name "$PM2_APP_NAME" -- start
+            pm2 save
+            pm2 list
+          ENDSSH
+
+          # Cleanup
+          rm -f deploy_key

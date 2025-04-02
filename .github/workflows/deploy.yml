@@ -1,28 +1,52 @@
-name: Node.js CI/CD
+name: Deploy Next.js App
 
-on: [push] # tells github to run this on any push to the repository
+on:
+  push:
+    branches:
+      - main  # Change this to your deployment branch
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    #needs: test # this job depends on "test" having finished
-    #if: github.ref == 'refs/heads/master' # we tell Github to only execute this step if we're on our master branch (so we don't put unfinished branches in production)
-    strategy:
-      fail-fast: false # tells github to not run further steps if this one fails
-      matrix:
-        node-version: [20.x] # sets the version of node we want to use, should be what you have on your server
 
     steps:
-      - name: Deploying to Digitalocean droplet
-        uses: appleboy/ssh-action@master # An action made to control Linux servers
-        with: # We set all our secrets here for the action, these won't be shown in the action logs
-          host: ${( secrets.HOST )}
-          username: ${( secrets.USERNAME )}
-          password: ${( secrets.PASSWORD )}
-          #port: ${( secrets.PORT )}
-          script: |
-            cd /var/www/nextjs # we move into our app's folder
-            git pull # we pull any changes from git
-            npm install # we install any missing dependencies
-            npm run build # we build our app
-            pm2 reload nextjs # we reload the app via PM2
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Next.js App
+        run: npm run build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: next-build
+          path: .next
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: next-build
+          path: .next
+
+      - name: Deploy to Server
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          USER: ${{ secrets.SERVER_USER }}
+        run: |
+          echo "$SSH_PRIVATE_KEY" > deploy_key.pem
+          chmod 600 deploy_key.pem
+          rsync -avz -e "ssh -i deploy_key.pem -o StrictHostKeyChecking=no" .next/ $USER@$SERVER_IP:/var/www/nextjs
+          ssh -i deploy_key.pem -o StrictHostKeyChecking=no $USER@$SERVER_IP << 'EOF'
+            cd /var/www/nextjs
+            npm install --production
+            pm2 restart next-app || pm2 start npm --name "next-app" -- start
+          EOF

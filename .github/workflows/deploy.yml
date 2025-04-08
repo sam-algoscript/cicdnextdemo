@@ -82,34 +82,34 @@ jobs:
       - name: Install rsync
         run: sudo apt-get update && sudo apt-get install -y rsync
 
-      - name: Deploy to Server
+       - name: Deploy to Server
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SERVER_IP: ${{ secrets.SERVER_IP }}
-          USER: ${{ secrets.SERVER_USER }}
-          APP_DIR: ${{ secrets.APP_DIR || '/var/www/cicdnextdemo' }}
-          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME || 'next-app' }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+          PM2_APP_NAME: ${{ secrets.PM2_APP_NAME }}
         run: |
           echo "$SSH_PRIVATE_KEY" > deploy_key
           chmod 600 deploy_key
           mkdir -p ~/.ssh
           ssh-keyscan -H $SERVER_IP >> ~/.ssh/known_hosts
 
-          rsync -avz --no-perms --no-owner --no-group --delete \
+          echo "🔁 Uploading files..."
+          rsync -avz --delete \
             -e "ssh -i deploy_key -o StrictHostKeyChecking=no" \
-            .next/ \
-            public/ \
-            package*.json \
-            $USER@$SERVER_IP:$APP_DIR/
+            .next/ public/ package*.json \
+            $SERVER_USER@$SERVER_IP:$APP_DIR/
 
-          ssh -i deploy_key -o StrictHostKeyChecking=no $USER@$SERVER_IP <<EOF
+          echo "🚀 Restarting app on server..."
+          ssh -i deploy_key -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP <<EOF
             set -e
             cd $APP_DIR
-            npm ci --production
-            pm2 delete $PM2_APP_NAME || true
+            npm ci --omit=dev
+            pm2 delete "$PM2_APP_NAME" || true
             pm2 start npm --name "$PM2_APP_NAME" -- start
             pm2 save
-            pm2 list
           EOF
 
           rm -f deploy_key
+

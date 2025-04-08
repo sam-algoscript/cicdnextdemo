@@ -87,7 +87,7 @@ jobs:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SERVER_IP: ${{ secrets.SERVER_IP }}
           USER: ${{ secrets.SERVER_USER }}
-          APP_DIR: ${{ secrets.APP_DIR || '/var/www/nextjs' }}
+          APP_DIR: ${{ secrets.APP_DIR || '/var/www/cicdnextdemo' }}
           PM2_APP_NAME: ${{ secrets.PM2_APP_NAME || 'next-app' }}
         run: |
           echo "$SSH_PRIVATE_KEY" > deploy_key
